@@ -1,5 +1,9 @@
 # Environment variables
 .env
+.env.backup
+
+# Backup files
+*.bak
 .env.local
 .env.*.local
 
