@@ -1,0 +1,9 @@
+@import './theme-christmas.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Space Mono', monospace;
+}

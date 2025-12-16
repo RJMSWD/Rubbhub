@@ -1,0 +1,1 @@
+export { EntryCard } from './EntryCard';
