@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode, useCa
 import { entriesApi, EntryData, CreateEntryData } from '../lib/api';
 import type { Entry, NewEntryState, Comment } from '../types';
 import { mapEntryData } from '../utils/entryMapper';
+import { mergeFetchedEntryIntoFeed } from '../utils/entriesFeed';
 
 interface EntriesContextType {
   entries: Entry[];
@@ -183,14 +184,8 @@ export const EntriesProvider = ({ children }: { children: ReactNode }) => {
       const data = await entriesApi.getOne(id);
       if (!data) return null;
       const entry = mapEntryData(data);
-      // 更新或添加到列表
-      setEntries(prev => {
-        const exists = prev.find(e => e.id === id);
-        if (exists) {
-          return prev.map(e => e.id === id ? entry : e);
-        }
-        return [entry, ...prev];
-      });
+      // 仅更新已存在于 feed 中的帖子，避免 detail-only 数据污染首页分页
+      setEntries((prev) => mergeFetchedEntryIntoFeed(prev, entry));
       return entry;
     } catch {
       return null;

@@ -3,10 +3,10 @@ import { useNavigate, Link } from 'react-router-dom';
 import { ArrowLeft, Bell, MessageSquare, UserPlus, Heart, Check, CheckCheck } from 'lucide-react';
 import { notificationsApi, NotificationData } from '../lib/api';
 import { useAuth, useTheme } from '../context';
+import { createNotificationsCache } from '../utils/notificationsCache';
 
 const MIN_LOADING_MS = 180;
-let notificationsCache: NotificationData[] | null = null;
-let notificationsCacheTs = 0;
+const notificationsCache = createNotificationsCache<NotificationData>(5 * 60 * 1000);
 
 export const NotificationsPage = () => {
   const navigate = useNavigate();
@@ -22,31 +22,37 @@ export const NotificationsPage = () => {
 
   useEffect(() => {
     if (!currentUser) {
+      notificationsCache.clear();
       setNotifications([]);
       setLoading(false);
       return;
     }
-    const now = Date.now();
-    const hasFreshCache = notificationsCache && now - notificationsCacheTs < 5 * 60 * 1000;
-    if (hasFreshCache && notificationsCache) {
-      setNotifications(notificationsCache);
+    const cached = notificationsCache.get(currentUser.id, Date.now());
+    if (cached) {
+      setNotifications(cached.items);
       setLoading(false);
       loadNotifications(false);
     } else {
       loadNotifications(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   const loadNotifications = async (useLoading: boolean) => {
+    const userId = currentUser?.id;
+    if (!userId) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
     try {
       const start = Date.now();
       if (useLoading) setLoading(true);
       else setRefreshing(true);
       const res = await notificationsApi.getAll(1, 50);
       setNotifications(res.notifications || []);
-      notificationsCache = res.notifications || [];
-      notificationsCacheTs = Date.now();
+      notificationsCache.set(userId, res.notifications || [], Date.now());
       const elapsed = Date.now() - start;
       const delay = Math.max(0, MIN_LOADING_MS - elapsed);
       setTimeout(() => {
@@ -61,12 +67,19 @@ export const NotificationsPage = () => {
     }
   };
 
+  const markAsReadLocally = (id: number) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
+    if (currentUser) {
+      notificationsCache.markAsRead(currentUser.id, id);
+    }
+    window.dispatchEvent(new Event('notification-read'));
+  };
+
   const handleMarkAsRead = async (id: number, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     try {
+      markAsReadLocally(id);
       await notificationsApi.markAsRead(id);
-      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
-      window.dispatchEvent(new Event('notification-read'));
     } catch (err) {
       console.error('标记已读失败:', err);
     }
@@ -74,9 +87,10 @@ export const NotificationsPage = () => {
 
   const handleNotificationClick = async (n: NotificationData) => {
     if (!n.is_read) {
-      await notificationsApi.markAsRead(n.id);
-      setNotifications(prev => prev.map(item => item.id === n.id ? { ...item, is_read: true } : item));
-      window.dispatchEvent(new Event('notification-read'));
+      markAsReadLocally(n.id);
+      notificationsApi.markAsRead(n.id).catch((err) => {
+        console.error('标记已读失败:', err);
+      });
     }
     if (n.entry_id) {
       navigate(`/entry/${n.entry_id}`);
@@ -87,9 +101,12 @@ export const NotificationsPage = () => {
 
   const handleMarkAllAsRead = async () => {
     try {
-      await notificationsApi.markAllAsRead();
-      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+      if (currentUser) {
+        notificationsCache.markAllAsRead(currentUser.id);
+      }
       window.dispatchEvent(new Event('notification-read'));
+      await notificationsApi.markAllAsRead();
     } catch (err) {
       console.error('标记全部已读失败:', err);
     }

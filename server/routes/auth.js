@@ -5,6 +5,7 @@ import { query } from '../db.js';
 import { authLimiter } from '../middleware/rateLimiter.js';
 import { registerRules, loginRules, profileRules, validate } from '../middleware/validator.js';
 import logger from '../utils/logger.js';
+import { requireAuth } from '../utils/auth.js';
 
 const router = express.Router();
 
@@ -142,25 +143,14 @@ router.post('/login', authLimiter, loginRules, validate, async (req, res) => {
 });
 
 // 获取当前用户信息
-router.get('/me', async (req, res) => {
+router.get('/me', requireAuth, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        success: false, 
-        error: { code: 'UNAUTHORIZED', message: '请先登录' } 
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
     const userResult = await query(
       `SELECT u.id, u.email, p.username, p.title, p.bio, p.role, p.created_at
        FROM users u
        JOIN profiles p ON u.id = p.id
        WHERE u.id = ?`,
-      [decoded.userId]
+      [req.user.userId]
     );
 
     if (userResult.rows.length === 0) {
@@ -184,12 +174,6 @@ router.get('/me', async (req, res) => {
       }
     });
   } catch (err) {
-    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
-      return res.status(401).json({ 
-        success: false, 
-        error: { code: 'INVALID_TOKEN', message: 'Token 无效或已过期' } 
-      });
-    }
     logger.error('获取用户信息错误:', err);
     res.status(500).json({ 
       success: false, 
@@ -199,23 +183,13 @@ router.get('/me', async (req, res) => {
 });
 
 // 更新用户资料
-router.put('/profile', profileRules, validate, async (req, res) => {
+router.put('/profile', requireAuth, profileRules, validate, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        success: false, 
-        error: { code: 'UNAUTHORIZED', message: '请先登录' } 
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const { title, bio } = req.body;
 
     await query(
       'UPDATE profiles SET title = COALESCE(?, title), bio = COALESCE(?, bio) WHERE id = ?',
-      [title, bio, decoded.userId]
+      [title, bio, req.user.userId]
     );
 
     res.json({ success: true, message: '资料更新成功' });

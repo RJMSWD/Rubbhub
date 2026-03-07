@@ -1,4 +1,4 @@
-# Rubbish Archive v3.0
+# Rubbish Archive v4.0
 
 > 科研废料收容所 - 一个供科研人员分享和记录"失败"实验、项目的社区平台
 目前代码全是vibe coding结果，如果你觉得有趣可以加入我
@@ -70,11 +70,15 @@ Rubbish Archive 是一个独特的社区平台，让科研人员可以分享那�
 - ✅ 头像点击跳转用户主页
 - ✅ 圣诞主题开关（雪花/彩灯/节日配色，可一键开关，不影响默认逻辑）
 
-### 技术架构（v3.0 新增）
+### 技术架构（v4.0 新增）
 - ✅ 统一错误处理（标准化错误码）
 - ✅ 输入验证（防止非法参数）
 - ✅ API 限流（防止恶意请求）
 - ✅ 日志系统（请求日志 + 错误追踪）
+- ✅ 通知缓存按用户隔离，避免串号和未读状态回弹
+- ✅ 被封禁用户的旧 Token 在鉴权阶段即时失效
+- ✅ 数据库初始化脚本补齐 follows / user_sessions / views / reply_to
+- ✅ 新增 `npm test` / `npm run typecheck` 验证脚本
 
 ## 节日主题（圣诞模式）
 
@@ -279,9 +283,8 @@ PORT=3001
 
 ### 3. 初始化数据库
 ```sql
--- 执行 server/init.sql
--- 添加 reply_to 字段
-ALTER TABLE comments ADD COLUMN reply_to VARCHAR(50) DEFAULT NULL;
+-- 直接执行 server/init.sql
+-- v4 已包含 follows / user_sessions / entries.views / comments.reply_to 等结构
 ```
 
 ### 4. 启动服务
@@ -293,6 +296,13 @@ cd server && npm start
 npm run dev
 ```
 
+### 4.1 验证命令（v4 新增）
+```bash
+npm test
+npm run typecheck
+npm run build
+```
+
 ### 5. 访问应用
 http://localhost:3000
 
@@ -302,6 +312,19 @@ http://localhost:3000
 - 设置管理员：`UPDATE profiles SET role = 'admin' WHERE username = 'xxx';`
 
 ## 版本历史
+
+### v4.0 (2026-03-08)
+- 🛡️ 稳定性与安全修复
+  - 通知缓存改为按用户隔离，修复同标签页切换账号时可能看到上一位用户通知的问题
+  - 鉴权流程新增数据库回查，被封禁用户即使持有旧 Token 也无法继续访问受保护接口
+  - 详情页拉取帖子时不再污染首页 feed，避免分页和排序状态被 detail-only 数据打乱
+  - 个人资料页在硬刷新后会正确回填异步加载到的 title / bio，避免空表单覆盖旧资料
+- 🗃️ 数据库与部署修复
+  - `server/init.sql` 补齐 `follows`、`user_sessions`、`entries.views`、`comments.reply_to`
+  - README 的初始化说明与实际运行时代码保持一致，不再需要手动追加 SQL
+- 🧪 工程质量改进
+  - 移除错误的 Windows-only Rollup 依赖，修复 macOS / Linux 下 `npm install` 失败问题
+  - 新增 `npm test`、`npm run typecheck`，并补充针对通知缓存、资料同步、feed 合并、鉴权状态的回归测试
 
 ### v3.0 (2025-12-08)
 - 🏗️ 后端架构升级

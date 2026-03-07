@@ -123,6 +123,11 @@ export interface FollowUserData {
   title?: string;
 }
 
+interface AdminListResponse<T> {
+  success: boolean;
+  data: T;
+}
+
 // API 配置
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
 
@@ -224,7 +229,7 @@ export const entriesApi = {
 
 // 管理员 API
 export const adminApi = {
-  getInviteCodes: () => request<InviteCodeData[]>('/admin/invite-codes'),
+  getInviteCodes: () => request<AdminListResponse<InviteCodeData[]>>('/admin/invite-codes'),
 
   createInviteCode: (code: string) =>
     request<{ success: boolean }>('/admin/invite-codes', {
@@ -243,7 +248,7 @@ export const adminApi = {
       method: 'DELETE',
     }),
 
-  getUsers: () => request<UserProfileData[]>('/admin/users'),
+  getUsers: () => request<AdminListResponse<UserProfileData[]>>('/admin/users'),
 
   toggleBan: (userId: string, is_banned: boolean) =>
     request<{ success: boolean }>(`/admin/users/${userId}/ban`, {

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Fingerprint, Edit3, Save, Check, LogOut, Mail } from 'lucide-react';
 import { useAuth, useTheme } from '../../context';
+import { getNextProfileFormState } from '../../utils/profileForm';
 
 export const ProfileView = () => {
   const navigate = useNavigate();
@@ -23,9 +24,22 @@ export const ProfileView = () => {
     title: currentUser?.title || '',
     bio: currentUser?.bio || ''
   });
+  const [hydratedUserId, setHydratedUserId] = useState<string | null>(currentUser?.id || null);
   const [success, setSuccess] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    const next = getNextProfileFormState(formData, hydratedUserId, currentUser);
+    if (
+      next.hydratedUserId !== hydratedUserId ||
+      next.formData.title !== formData.title ||
+      next.formData.bio !== formData.bio
+    ) {
+      setFormData(next.formData);
+      setHydratedUserId(next.hydratedUserId);
+    }
+  }, [currentUser?.id, currentUser?.title, currentUser?.bio]);
 
   if (loading) {
     return (

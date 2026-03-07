@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS entries (
   content TEXT,
   media JSON,
   sympathy INT DEFAULT 0,
+  views INT DEFAULT 0,
   tags JSON,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (author_id) REFERENCES users(id)
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS comments (
   author_name VARCHAR(50),
   content TEXT NOT NULL,
   likes INT DEFAULT 0,
+  reply_to VARCHAR(50) DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE,
   FOREIGN KEY (author_id) REFERENCES users(id)
@@ -103,6 +105,25 @@ CREATE TABLE IF NOT EXISTS notifications (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- 关注关系表
+CREATE TABLE IF NOT EXISTS follows (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  follower_id INT NOT NULL,
+  following_id INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_follow (follower_id, following_id),
+  FOREIGN KEY (follower_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- 在线状态表
+CREATE TABLE IF NOT EXISTS user_sessions (
+  user_id INT PRIMARY KEY,
+  last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_ip VARCHAR(64) DEFAULT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- 创建索引
 CREATE INDEX idx_entries_author ON entries(author_id);
 CREATE INDEX idx_entries_visibility ON entries(visibility);
@@ -110,6 +131,9 @@ CREATE INDEX idx_entries_created ON entries(created_at DESC);
 CREATE INDEX idx_comments_entry ON comments(entry_id);
 CREATE INDEX idx_entry_likes_entry ON entry_likes(entry_id);
 CREATE INDEX idx_comment_likes_comment ON comment_likes(comment_id);
+CREATE INDEX idx_follows_follower ON follows(follower_id);
+CREATE INDEX idx_follows_following ON follows(following_id);
+CREATE INDEX idx_user_sessions_last_seen ON user_sessions(last_seen DESC);
 
 -- 插入默认邀请码
 INSERT IGNORE INTO invite_codes (id, code, is_active) VALUES (UUID(), 'Rubbish', true);
