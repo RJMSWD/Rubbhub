@@ -3,14 +3,8 @@ import { query } from '../db.js';
 // 节流：同一用户60秒内只更新一次
 const userLastUpdate = new Map(); // 内存缓存，键: userId, 值: 上次更新时间戳
 
-// 从请求头获取真实IP（考虑反向代理）
-const getClientIP = (req) => {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.ip || req.connection?.remoteAddress || '0.0.0.0';
-};
+// Express 根据 trust proxy 配置决定是否信任转发头。
+const getClientIP = (req) => req.ip || req.socket?.remoteAddress || '0.0.0.0';
 
 /**
  * 记录用户活动（更新user_sessions.last_seen）

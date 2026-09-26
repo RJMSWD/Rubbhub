@@ -2,6 +2,7 @@ import express from 'express';
 import { query } from '../db.js';
 import logger from '../utils/logger.js';
 import { requireAuth } from '../utils/auth.js';
+import { getPagination } from '../utils/pagination.js';
 
 const router = express.Router();
 
@@ -24,9 +25,9 @@ export const createNotification = async (userId, type, fromUserId, fromUsername,
 // 获取通知列表
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
+    const pagination = getPagination(req.query, 20, 50);
+    if (!pagination) return res.status(400).json({ error: '分页参数无效' });
+    const { page, limit, offset } = pagination;
 
     const result = await query(
       `SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,

@@ -1,9 +1,10 @@
 import express from 'express';
-import { query } from '../db.js';
+import { query, getConnection } from '../db.js';
 import logger from '../utils/logger.js';
 import { createNotification } from './notifications.js';
 import { optionalAuth, requireAuth } from '../utils/auth.js';
 import { safeParseJSON } from '../utils/parsers.js';
+import { withTransaction } from '../utils/transaction.js';
 
 const router = express.Router();
 
@@ -190,51 +191,33 @@ router.get('/:username/following', requireAuth, async (req, res) => {
 router.post('/:username/follow', requireAuth, async (req, res) => {
   try {
     const { username } = req.params;
+    const result = await withTransaction(getConnection, async (txQuery) => {
+      // 锁住关注者，避免同一用户的并发切换读到相同的旧状态。
+      await txQuery('SELECT id FROM profiles WHERE id = ? FOR UPDATE', [req.user.userId]);
+      const targetResult = await txQuery('SELECT id FROM profiles WHERE username = ?', [username]);
+      if (targetResult.rows.length === 0) return { status: 404, error: '用户不存在' };
 
-    // 获取目标用户
-    const targetResult = await query(
-      'SELECT id FROM profiles WHERE username = ?',
-      [username]
-    );
+      const targetId = targetResult.rows[0].id;
+      if (targetId === req.user.userId) return { status: 400, error: '不能关注自己' };
 
-    if (targetResult.rows.length === 0) {
-      return res.status(404).json({ error: '用户不存在' });
-    }
-
-    const targetId = targetResult.rows[0].id;
-
-    // 不能关注自己
-    if (targetId === req.user.userId) {
-      return res.status(400).json({ error: '不能关注自己' });
-    }
-
-    // 检查是否已关注
-    const followCheck = await query(
-      'SELECT * FROM follows WHERE follower_id = ? AND following_id = ?',
-      [req.user.userId, targetId]
-    );
-
-    if (followCheck.rows.length > 0) {
-      // 取消关注
-      await query(
-        'DELETE FROM follows WHERE follower_id = ? AND following_id = ?',
+      const followCheck = await txQuery(
+        'SELECT id FROM follows WHERE follower_id = ? AND following_id = ?',
         [req.user.userId, targetId]
       );
-      res.json({ following: false });
-    } else {
-      // 关注
-      await query(
-        'INSERT INTO follows (follower_id, following_id) VALUES (?, ?)',
-        [req.user.userId, targetId]
-      );
-      
-      // 发送关注通知
-      const followerResult = await query('SELECT username FROM profiles WHERE id = ?', [req.user.userId]);
-      const followerName = followerResult.rows[0]?.username || 'Unknown';
-      await createNotification(targetId, 'follow', req.user.userId, followerName);
-      
-      res.json({ following: true });
+      if (followCheck.rows.length > 0) {
+        await txQuery('DELETE FROM follows WHERE follower_id = ? AND following_id = ?', [req.user.userId, targetId]);
+        return { following: false, targetId };
+      }
+
+      await txQuery('INSERT INTO follows (follower_id, following_id) VALUES (?, ?)', [req.user.userId, targetId]);
+      return { following: true, targetId };
+    });
+
+    if (result.status) return res.status(result.status).json({ error: result.error });
+    if (result.following) {
+      await createNotification(result.targetId, 'follow', req.user.userId, req.user.username);
     }
+    res.json({ following: result.following });
   } catch (err) {
     logger.error('关注操作错误:', err);
     res.status(500).json({ error: '操作失败' });

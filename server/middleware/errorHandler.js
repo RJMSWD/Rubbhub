@@ -27,7 +27,6 @@ export const errorHandler = (err, req, res, next) => {
   // 记录错误日志
   logger.error(`${req.method} ${req.originalUrl} - ${err.message}`, { 
     stack: err.stack,
-    body: req.body,
     user: req.user?.userId 
   });
 

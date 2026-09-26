@@ -11,6 +11,9 @@ const createAuthError = (code, message, status) => {
 
 const verifyToken = (token) => jwt.verify(token, process.env.JWT_SECRET);
 
+const isTokenError = (err) => err?.code === 'INVALID_TOKEN' ||
+  ['JsonWebTokenError', 'TokenExpiredError', 'NotBeforeError'].includes(err?.name);
+
 const findUserById = async (userId) => {
   const result = await query(
     `SELECT u.id, u.email, p.username, p.role, p.is_banned
@@ -63,7 +66,8 @@ export const optionalAuth = async (req, res, next) => {
           console.error('[OptionalAuth] 记录活动失败:', err);
         });
       }
-    } catch {
+    } catch (err) {
+      if (!isTokenError(err) && err?.code !== 'USER_BANNED') return next(err);
       req.user = null;
     }
   } else {
@@ -91,6 +95,7 @@ export const requireAuth = async (req, res, next) => {
     if (err?.code === 'USER_BANNED') {
       return res.status(403).json({ error: err.message });
     }
-    res.status(401).json({ error: 'Token 无效' });
+    if (isTokenError(err)) return res.status(401).json({ error: 'Token 无效' });
+    next(err);
   }
 };

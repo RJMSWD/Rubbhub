@@ -1,31 +1,29 @@
 import express from 'express';
-import { query } from '../db.js';
+import { randomUUID } from 'node:crypto';
+import { query, getConnection } from '../db.js';
 import { createLimiter } from '../middleware/rateLimiter.js';
 import { createEntryRules, commentRules, validate } from '../middleware/validator.js';
 import logger from '../utils/logger.js';
 import { createNotification } from './notifications.js';
 import { optionalAuth } from '../utils/auth.js';
 import { safeParseJSON } from '../utils/parsers.js';
+import { getPagination } from '../utils/pagination.js';
+import { withTransaction } from '../utils/transaction.js';
 
 const router = express.Router();
 
 const authMiddleware = optionalAuth;
 
 // 生成帖子 ID
-const generateEntryId = () => {
-  const chars = 'ABCDEF0123456789';
-  let str = '';
-  for (let i = 0; i < 4; i++) str += chars[Math.floor(Math.random() * chars.length)];
-  return `RUB.${new Date().getFullYear()}.${str}`;
-};
+const generateEntryId = () => `RUB.${new Date().getFullYear()}.${randomUUID()}`;
 
 // 获取帖子列表（支持分页）
 router.get('/', optionalAuth, async (req, res) => {
   try {
     const userId = req.user?.userId;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
+    const pagination = getPagination(req.query, 10, 50);
+    if (!pagination) return res.status(400).json({ error: '分页参数无效' });
+    const { page, limit, offset } = pagination;
 
     // 查询总数
     let countResult;
@@ -59,7 +57,7 @@ router.get('/', optionalAuth, async (req, res) => {
 
     const entries = entriesResult.rows;
     if (entries.length === 0) {
-      return res.json({ entries: [], total: 0, page, limit, totalPages: 0 });
+      return res.json({ entries: [], total, page, limit, totalPages: Math.ceil(total / limit) });
     }
 
     const entryIds = entries.map(e => e.id);
@@ -282,7 +280,7 @@ router.post('/', authMiddleware, createLimiter, createEntryRules, validate, asyn
 });
 
 // 更新帖子
-router.put('/:id', authMiddleware, async (req, res) => {
+router.put('/:id', authMiddleware, createEntryRules, validate, async (req, res) => {
   try {
     if (!req.user) {
       return res.status(401).json({ error: '请先登录' });
@@ -336,14 +334,7 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: '无权删除此帖子' });
     }
 
-    // 删除相关数据
-    const commentsResult = await query('SELECT id FROM comments WHERE entry_id = ?', [id]);
-    const commentIds = commentsResult.rows.map(c => c.id);
-    if (commentIds.length > 0) {
-      await query(`DELETE FROM comment_likes WHERE comment_id IN (${commentIds.map(() => '?').join(',')})`, commentIds);
-    }
-    await query('DELETE FROM comments WHERE entry_id = ?', [id]);
-    await query('DELETE FROM entry_likes WHERE entry_id = ?', [id]);
+    // 外键会在同一个数据库操作中级联删除评论和点赞。
     await query('DELETE FROM entries WHERE id = ?', [id]);
 
     res.json({ success: true });
@@ -361,49 +352,41 @@ router.post('/:id/like', authMiddleware, async (req, res) => {
     }
 
     const { id } = req.params;
+    const result = await withTransaction(getConnection, async (txQuery) => {
+      const entryResult = await txQuery(
+        'SELECT author_id, title, visibility FROM entries WHERE id = ? FOR UPDATE',
+        [id]
+      );
+      if (entryResult.rows.length === 0) return null;
 
-    // 获取帖子作者，用于通知
-    const entryResult = await query('SELECT author_id, title, visibility FROM entries WHERE id = ?', [id]);
-    if (entryResult.rows.length === 0) {
-      return res.status(404).json({ error: '帖子不存在' });
-    }
-    const entry = entryResult.rows[0];
+      const entry = entryResult.rows[0];
+      if (entry.visibility === 'private' && entry.author_id !== req.user.userId) return null;
 
-    // 检查是否已点赞
-    const likeResult = await query(
-      'SELECT * FROM entry_likes WHERE entry_id = ? AND user_id = ?',
-      [id, req.user.userId]
-    );
-
-    if (likeResult.rows.length > 0) {
-      // 取消点赞
-      await query('DELETE FROM entry_likes WHERE entry_id = ? AND user_id = ?', [id, req.user.userId]);
-      await query('UPDATE entries SET sympathy = sympathy - 1 WHERE id = ?', [id]);
-      res.json({ liked: false });
-    } else {
-      // 点赞
-      await query('INSERT INTO entry_likes (entry_id, user_id) VALUES (?, ?)', [id, req.user.userId]);
-      await query('UPDATE entries SET sympathy = sympathy + 1 WHERE id = ?', [id]);
-
-      // 点赞通知：不通知自己
-      if (entry.author_id !== req.user.userId) {
-        // 获取点赞者用户名
-        const likerResult = await query('SELECT username FROM profiles WHERE id = ?', [req.user.userId]);
-        const likerName = likerResult.rows[0]?.username || 'Unknown';
-
-        await createNotification(
-          entry.author_id,
-          'like',
-          req.user.userId,
-          likerName,
-          id,
-          entry.title,
-          null
-        );
+      const likeResult = await txQuery(
+        'SELECT id FROM entry_likes WHERE entry_id = ? AND user_id = ?',
+        [id, req.user.userId]
+      );
+      if (likeResult.rows.length > 0) {
+        await txQuery('DELETE FROM entry_likes WHERE entry_id = ? AND user_id = ?', [id, req.user.userId]);
+        await txQuery('UPDATE entries SET sympathy = GREATEST(sympathy - 1, 0) WHERE id = ?', [id]);
+        return { liked: false, entry };
       }
 
-      res.json({ liked: true });
+      await txQuery('INSERT INTO entry_likes (entry_id, user_id) VALUES (?, ?)', [id, req.user.userId]);
+      await txQuery('UPDATE entries SET sympathy = sympathy + 1 WHERE id = ?', [id]);
+      return { liked: true, entry };
+    });
+
+    if (!result) return res.status(404).json({ error: '帖子不存在' });
+
+    if (result.liked && result.entry.author_id !== req.user.userId) {
+      await createNotification(
+        result.entry.author_id, 'like', req.user.userId, req.user.username,
+        id, result.entry.title, null
+      );
     }
+
+    res.json({ liked: result.liked });
   } catch (err) {
     logger.error('点赞错误:', err);
     res.status(500).json({ error: '操作失败' });
@@ -411,7 +394,7 @@ router.post('/:id/like', authMiddleware, async (req, res) => {
 });
 
 // 添加评论
-router.post('/:id/comments', authMiddleware, async (req, res) => {
+router.post('/:id/comments', authMiddleware, commentRules, validate, async (req, res) => {
   try {
     if (!req.user) {
       return res.status(401).json({ error: '请先登录' });
@@ -419,62 +402,45 @@ router.post('/:id/comments', authMiddleware, async (req, res) => {
 
     const { id } = req.params;
     const { content, parentId } = req.body;
-    const commentId = `c${Date.now()}`;
+    const commentId = `c${randomUUID()}`;
 
-    // 获取用户名
-    const userResult = await query('SELECT username FROM profiles WHERE id = ?', [req.user.userId]);
-    const authorName = userResult.rows[0]?.username || 'Unknown';
+    const result = await withTransaction(getConnection, async (txQuery) => {
+      const entryResult = await txQuery('SELECT title, author_id, visibility FROM entries WHERE id = ? FOR UPDATE', [id]);
+      if (entryResult.rows.length === 0) return { status: 404, error: '帖子不存在' };
+      const entry = entryResult.rows[0];
+      if (entry.visibility === 'private' && entry.author_id !== req.user.userId) {
+        return { status: 404, error: '帖子不存在' };
+      }
 
-    // 处理回复逻辑（2层结构）
-    let actualParentId = null;
-    let replyTo = null;
-
-    if (parentId) {
-      const parentComment = await query('SELECT parent_id, author_name FROM comments WHERE id = ?', [parentId]);
-      if (parentComment.rows.length > 0) {
-        // 如果回复的是回复，改为回复主评论
+      let actualParentId = null;
+      let replyTo = null;
+      let replyToUserId = null;
+      if (parentId) {
+        const parentComment = await txQuery(
+          'SELECT parent_id, author_id, author_name FROM comments WHERE id = ? AND entry_id = ? FOR UPDATE',
+          [parentId, id]
+        );
+        if (parentComment.rows.length === 0) return { status: 404, error: '评论不存在' };
         actualParentId = parentComment.rows[0].parent_id || parentId;
         replyTo = parentComment.rows[0].author_name;
+        replyToUserId = parentComment.rows[0].author_id;
       }
-    }
 
-    await query(
-      `INSERT INTO comments (id, entry_id, parent_id, author_id, author_name, content, likes, reply_to)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-      [commentId, id, actualParentId, req.user.userId, authorName, content, replyTo]
-    );
+      await txQuery(
+        `INSERT INTO comments (id, entry_id, parent_id, author_id, author_name, content, likes, reply_to)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+        [commentId, id, actualParentId, req.user.userId, req.user.username, content, replyTo]
+      );
+      return { entry, replyToUserId };
+    });
+
+    if (result.status) return res.status(result.status).json({ error: result.error });
 
     // 创建通知
-    const entryResult = await query('SELECT title, author_id FROM entries WHERE id = ?', [id]);
-    if (entryResult.rows.length > 0) {
-      const entry = entryResult.rows[0];
-      
-      if (parentId && replyTo) {
-        // 回复评论 → 通知被回复者
-        const replyToUser = await query('SELECT id FROM profiles WHERE username = ?', [replyTo]);
-        if (replyToUser.rows.length > 0) {
-          await createNotification(
-            replyToUser.rows[0].id,
-            'reply',
-            req.user.userId,
-            authorName,
-            id,
-            entry.title,
-            commentId
-          );
-        }
-      } else {
-        // 评论帖子 → 通知帖子作者
-        await createNotification(
-          entry.author_id,
-          'comment',
-          req.user.userId,
-          authorName,
-          id,
-          entry.title,
-          commentId
-        );
-      }
+    if (result.replyToUserId) {
+      await createNotification(result.replyToUserId, 'reply', req.user.userId, req.user.username, id, result.entry.title, commentId);
+    } else {
+      await createNotification(result.entry.author_id, 'comment', req.user.userId, req.user.username, id, result.entry.title, commentId);
     }
 
     res.json({ success: true, id: commentId });
@@ -493,36 +459,22 @@ router.delete('/comments/:commentId', authMiddleware, async (req, res) => {
 
     const { commentId } = req.params;
 
-    // 检查评论是否存在并获取作者和父级
-    const commentResult = await query('SELECT author_id, parent_id FROM comments WHERE id = ?', [commentId]);
-    if (commentResult.rows.length === 0) {
-      return res.status(404).json({ error: '评论不存在' });
-    }
+    const result = await withTransaction(getConnection, async (txQuery) => {
+      const commentResult = await txQuery('SELECT author_id, parent_id FROM comments WHERE id = ? FOR UPDATE', [commentId]);
+      if (commentResult.rows.length === 0) return { status: 404, error: '评论不存在' };
 
-    // 检查权限：作者可删自己的，管理员可删任何
-    const isAuthor = commentResult.rows[0].author_id === req.user.userId;
-    const isAdmin = req.user.role === 'admin';
+      const isAuthor = commentResult.rows[0].author_id === req.user.userId;
+      if (!isAuthor && req.user.role !== 'admin') return { status: 403, error: '无权删除此评论' };
 
-    if (!isAuthor && !isAdmin) {
-      return res.status(403).json({ error: '无权删除此评论' });
-    }
-
-    const isMainComment = !commentResult.rows[0].parent_id;
-
-    if (isMainComment) {
-      // 删除主评论：同时删除所有回复
-      const repliesResult = await query('SELECT id FROM comments WHERE parent_id = ?', [commentId]);
-      const replyIds = repliesResult.rows.map(r => r.id);
-      
-      if (replyIds.length > 0) {
-        await query(`DELETE FROM comment_likes WHERE comment_id IN (${replyIds.map(() => '?').join(',')})`, replyIds);
-        await query(`DELETE FROM comments WHERE parent_id = ?`, [commentId]);
+      if (!commentResult.rows[0].parent_id) {
+        await txQuery('DELETE FROM comments WHERE parent_id = ?', [commentId]);
       }
-    }
+      // 评论点赞由外键级联删除。
+      await txQuery('DELETE FROM comments WHERE id = ?', [commentId]);
+      return { success: true };
+    });
 
-    // 删除当前评论
-    await query('DELETE FROM comment_likes WHERE comment_id = ?', [commentId]);
-    await query('DELETE FROM comments WHERE id = ?', [commentId]);
+    if (result.status) return res.status(result.status).json({ error: result.error });
 
     res.json({ success: true });
   } catch (err) {
@@ -540,20 +492,34 @@ router.post('/comments/:commentId/like', authMiddleware, async (req, res) => {
 
     const { commentId } = req.params;
 
-    const likeResult = await query(
-      'SELECT * FROM comment_likes WHERE comment_id = ? AND user_id = ?',
-      [commentId, req.user.userId]
-    );
+    const liked = await withTransaction(getConnection, async (txQuery) => {
+      const commentResult = await txQuery(
+        `SELECT c.id, e.author_id, e.visibility FROM comments c
+         JOIN entries e ON e.id = c.entry_id WHERE c.id = ? FOR UPDATE`,
+        [commentId]
+      );
+      if (commentResult.rows.length === 0) return null;
 
-    if (likeResult.rows.length > 0) {
-      await query('DELETE FROM comment_likes WHERE comment_id = ? AND user_id = ?', [commentId, req.user.userId]);
-      await query('UPDATE comments SET likes = likes - 1 WHERE id = ?', [commentId]);
-      res.json({ liked: false });
-    } else {
-      await query('INSERT INTO comment_likes (comment_id, user_id) VALUES (?, ?)', [commentId, req.user.userId]);
-      await query('UPDATE comments SET likes = likes + 1 WHERE id = ?', [commentId]);
-      res.json({ liked: true });
-    }
+      const entry = commentResult.rows[0];
+      if (entry.visibility === 'private' && entry.author_id !== req.user.userId) return null;
+
+      const likeResult = await txQuery(
+        'SELECT id FROM comment_likes WHERE comment_id = ? AND user_id = ?',
+        [commentId, req.user.userId]
+      );
+      if (likeResult.rows.length > 0) {
+        await txQuery('DELETE FROM comment_likes WHERE comment_id = ? AND user_id = ?', [commentId, req.user.userId]);
+        await txQuery('UPDATE comments SET likes = GREATEST(likes - 1, 0) WHERE id = ?', [commentId]);
+        return false;
+      }
+
+      await txQuery('INSERT INTO comment_likes (comment_id, user_id) VALUES (?, ?)', [commentId, req.user.userId]);
+      await txQuery('UPDATE comments SET likes = likes + 1 WHERE id = ?', [commentId]);
+      return true;
+    });
+
+    if (liked === null) return res.status(404).json({ error: '评论不存在' });
+    res.json({ liked });
   } catch (err) {
     logger.error('评论点赞错误:', err);
     res.status(500).json({ error: '操作失败' });

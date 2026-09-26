@@ -1,11 +1,12 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { query } from '../db.js';
+import { query, getConnection } from '../db.js';
 import { authLimiter } from '../middleware/rateLimiter.js';
 import { registerRules, loginRules, profileRules, validate } from '../middleware/validator.js';
 import logger from '../utils/logger.js';
 import { requireAuth } from '../utils/auth.js';
+import { withTransaction } from '../utils/transaction.js';
 
 const router = express.Router();
 
@@ -47,23 +48,27 @@ router.post('/register', authLimiter, registerRules, validate, async (req, res) 
     // 加密密码
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // 创建用户
-    const userResult = await query(
-      'INSERT INTO users (email, password_hash) VALUES (?, ?)',
-      [email, passwordHash]
-    );
-    const userId = userResult.rows.insertId;
-
-    // 创建用户资料
-    await query(
-      `INSERT INTO profiles (id, username, title, bio, role) 
-       VALUES (?, ?, '学术难民', '这个家伙很懒，什么实验记录都没留下。', 'user')`,
-      [userId, username]
-    );
+    await withTransaction(getConnection, async (txQuery) => {
+      const userResult = await txQuery(
+        'INSERT INTO users (email, password_hash) VALUES (?, ?)',
+        [email, passwordHash]
+      );
+      await txQuery(
+        `INSERT INTO profiles (id, username, title, bio, role)
+         VALUES (?, ?, '学术难民', '这个家伙很懒，什么实验记录都没留下。', 'user')`,
+        [userResult.rows.insertId, username]
+      );
+    });
 
     logger.info(`新用户注册: ${username} (${email})`);
     res.json({ success: true, message: '注册成功' });
   } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        error: { code: 'DUPLICATE_ERROR', message: '邮箱或用户名已被使用' }
+      });
+    }
     logger.error('注册错误:', err);
     res.status(500).json({ 
       success: false, 

@@ -1,51 +1,21 @@
 import express from 'express';
-import jwt from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
 import { query } from '../db.js';
-import { v4 as uuidv4 } from 'uuid';
 import { inviteCodeRules, validate } from '../middleware/validator.js';
 import logger from '../utils/logger.js';
+import { requireAuth } from '../utils/auth.js';
 
 const router = express.Router();
 
-// 管理员验证中间件
-import { recordUserActivity } from '../middleware/activityTracker.js';
-
-const adminMiddleware = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({
+const adminMiddleware = [requireAuth, (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({
       success: false,
-      error: { code: 'UNAUTHORIZED', message: '请先登录' }
+      error: { code: 'FORBIDDEN', message: '无管理员权限' }
     });
   }
-
-  try {
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: { code: 'FORBIDDEN', message: '无管理员权限' }
-      });
-    }
-    req.user = decoded;
-
-    // 记录管理员活动（非阻塞，失败不影响请求）
-    try {
-      await recordUserActivity(req);
-    } catch (activityErr) {
-      // 活动记录失败不阻断主请求
-      console.error('[AdminActivity] 记录活动失败:', activityErr);
-    }
-
-    next();
-  } catch {
-    res.status(401).json({
-      success: false,
-      error: { code: 'INVALID_TOKEN', message: 'Token 无效或已过期' }
-    });
-  }
-};
+  next();
+}];
 
 // 获取所有邀请码
 router.get('/invite-codes', adminMiddleware, async (req, res) => {
@@ -75,7 +45,7 @@ router.post('/invite-codes', adminMiddleware, inviteCodeRules, validate, async (
       });
     }
     
-    const id = uuidv4();
+    const id = randomUUID();
     await query(
       'INSERT INTO invite_codes (id, code, is_active) VALUES (?, ?, true)',
       [id, code]
@@ -84,6 +54,12 @@ router.post('/invite-codes', adminMiddleware, inviteCodeRules, validate, async (
     logger.info(`管理员 ${req.user.userId} 创建邀请码: ${code}`);
     res.json({ success: true, message: '邀请码创建成功' });
   } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        error: { code: 'DUPLICATE_ERROR', message: '邀请码已存在' }
+      });
+    }
     logger.error('创建邀请码错误:', err);
     res.status(500).json({ 
       success: false, 
@@ -96,7 +72,10 @@ router.post('/invite-codes', adminMiddleware, inviteCodeRules, validate, async (
 router.put('/invite-codes/:id', adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { is_active } = req.body;
+    const { is_active } = req.body || {};
+    if (typeof is_active !== 'boolean') {
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'is_active 必须是布尔值' } });
+    }
     await query('UPDATE invite_codes SET is_active = ? WHERE id = ?', [is_active, id]);
     res.json({ success: true, message: is_active ? '邀请码已启用' : '邀请码已禁用' });
   } catch (err) {
@@ -145,7 +124,10 @@ router.get('/users', adminMiddleware, async (req, res) => {
 router.put('/users/:id/ban', adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { is_banned } = req.body;
+    const { is_banned } = req.body || {};
+    if (typeof is_banned !== 'boolean') {
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'is_banned 必须是布尔值' } });
+    }
 
     // 不能封禁自己
     if (id == req.user.userId) {
@@ -194,7 +176,10 @@ router.put('/users/:id/ban', adminMiddleware, async (req, res) => {
  */
 router.get('/online-users', adminMiddleware, async (req, res) => {
   try {
-    const window = parseInt(req.query.window) || 5; // 默认5分钟
+    const window = req.query.window === undefined ? 5 : Number(req.query.window);
+    if (!Number.isSafeInteger(window) || window < 1 || window > 60) {
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'window 必须是 1 到 60 分钟' } });
+    }
 
     // 查询在指定时间窗口内活跃的用户
     logger.info(`管理员 ${req.user.userId} 查询在线用户，时间窗口: ${window}分钟`);
@@ -240,7 +225,7 @@ router.get('/online-users', adminMiddleware, async (req, res) => {
     logger.error('获取在线用户错误:', err);
     res.status(500).json({
       success: false,
-      error: { code: 'INTERNAL_ERROR', message: '获取失败', details: err.message }
+      error: { code: 'INTERNAL_ERROR', message: '获取失败' }
     });
   }
 });

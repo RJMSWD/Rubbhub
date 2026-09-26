@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS entries (
   views INT DEFAULT 0,
   tags JSON,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_entries_visibility (visibility),
+  INDEX idx_entries_created (created_at DESC),
   FOREIGN KEY (author_id) REFERENCES users(id)
 );
 
@@ -75,6 +77,7 @@ CREATE TABLE IF NOT EXISTS comments (
   likes INT DEFAULT 0,
   reply_to VARCHAR(50) DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_comments_parent (parent_id),
   FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE,
   FOREIGN KEY (author_id) REFERENCES users(id)
 );
@@ -102,6 +105,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   comment_id VARCHAR(50),
   is_read BOOLEAN DEFAULT false,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_notifications_user_created (user_id, created_at DESC),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -121,19 +125,9 @@ CREATE TABLE IF NOT EXISTS user_sessions (
   user_id INT PRIMARY KEY,
   last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   last_ip VARCHAR(64) DEFAULT NULL,
+  INDEX idx_user_sessions_last_seen (last_seen DESC),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
-
--- 创建索引
-CREATE INDEX idx_entries_author ON entries(author_id);
-CREATE INDEX idx_entries_visibility ON entries(visibility);
-CREATE INDEX idx_entries_created ON entries(created_at DESC);
-CREATE INDEX idx_comments_entry ON comments(entry_id);
-CREATE INDEX idx_entry_likes_entry ON entry_likes(entry_id);
-CREATE INDEX idx_comment_likes_comment ON comment_likes(comment_id);
-CREATE INDEX idx_follows_follower ON follows(follower_id);
-CREATE INDEX idx_follows_following ON follows(following_id);
-CREATE INDEX idx_user_sessions_last_seen ON user_sessions(last_seen DESC);
 
 -- 插入默认邀请码
 INSERT IGNORE INTO invite_codes (id, code, is_active) VALUES (UUID(), 'Rubbish', true);

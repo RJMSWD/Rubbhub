@@ -1,4 +1,4 @@
-# Rubbish Archive v4.0
+# Rubbish Archive v4.1
 
 > 科研废料收容所 - 一个供科研人员分享和记录"失败"实验、项目的社区平台
 目前代码全是vibe coding结果，如果你觉得有趣可以加入我
@@ -110,13 +110,13 @@ Rubbish Archive 是一个独特的社区平台，让科研人员可以分享那�
 | 技术 | 版本 | 用途 |
 |-----|------|-----|
 | Node.js | 18+ | 运行时 |
-| Express | 4.18 | Web 框架 |
+| Express | 4.x | Web 框架 |
 | MySQL | 8.0 | 数据库 |
-| mysql2 | 3.6 | 数据库驱动 |
+| mysql2 | 3.x | 数据库驱动 |
 | JWT | 9.0 | 身份认证 |
 | bcryptjs | 2.4 | 密码加密 |
 | express-validator | 7.3 | 输入验证 |
-| express-rate-limit | 8.2 | API 限流 |
+| express-rate-limit | 8.x | API 限流 |
 | winston | 3.19 | 日志系统 |
 
 
@@ -318,6 +318,13 @@ http://localhost:3000
 - 设置管理员：`UPDATE profiles SET role = 'admin' WHERE username = 'xxx';`
 
 ## 版本历史
+
+### v4.1 (2026-09-27)
+- 后端权限回查：管理员操作按数据库中的当前角色授权，私有帖子的点赞和评论也检查可见性。
+- 数据一致性：注册、点赞、关注和评论相关写入使用事务；删帖使用外键级联删除。
+- 输入与配置修复：校验分页、评论和管理员参数，统一登录与注册的邮箱格式，修正 MySQL 示例配置。
+- 更新后端运行依赖；`npm audit --omit=dev --prefix server` 检查为 0 项漏洞。
+- 新增后端接口回归测试；当前在线 Site 仍只有前端，后端和数据库尚未部署。
 
 ### v4.0 (2026-03-08)
 - 🛡️ 稳定性与安全修复

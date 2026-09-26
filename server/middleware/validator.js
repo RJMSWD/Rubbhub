@@ -39,7 +39,8 @@ export const registerRules = [
 // 登录验证
 export const loginRules = [
   body('email')
-    .isEmail().withMessage('邮箱格式不正确'),
+    .isEmail().withMessage('邮箱格式不正确')
+    .normalizeEmail(),
   body('password')
     .notEmpty().withMessage('密码不能为空')
 ];
@@ -78,7 +79,11 @@ export const createEntryRules = [
 export const commentRules = [
   body('content')
     .trim()
-    .isLength({ min: 1, max: 1000 }).withMessage('评论内容需要1-1000个字符')
+    .isLength({ min: 1, max: 1000 }).withMessage('评论内容需要1-1000个字符'),
+  body('parentId')
+    .optional()
+    .isString().withMessage('父评论 ID 无效')
+    .isLength({ min: 1, max: 50 }).withMessage('父评论 ID 无效')
 ];
 
 // ID 参数验证
